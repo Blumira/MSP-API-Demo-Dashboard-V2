@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
   User,
-  StickyNote,
   UserCheck,
   XSquare,
   MessageSquarePlus,
@@ -317,7 +316,7 @@ export function FindingsView({ findings, searchTerm, users }: FindingsViewProps)
             <SortButton field="org_name">Organization</SortButton>
             <SortButton field="priority">Priority</SortButton>
             <span>Status</span>
-            <span>Tracking</span>
+            <span>Responder</span>
             <SortButton field="created">Created</SortButton>
             <span />
           </div>
@@ -332,7 +331,7 @@ export function FindingsView({ findings, searchTerm, users }: FindingsViewProps)
             <>
               {filtered.slice(0, showCount).map((finding) => {
                 const annotation = getAnnotation(finding.finding_id);
-                const displayAssignee = annotation?.assignee || finding.assigned_to_name || finding.assigned_to;
+                const displayAssignee = annotation?.assignee || finding.assigned_to_name || finding.assigned_to || "Unassigned";
                 const isChecked = selected.has(finding.finding_id);
                 const isClosed = annotation?.localStatus === "closed";
                 void annotationVersion;
@@ -362,13 +361,7 @@ export function FindingsView({ findings, searchTerm, users }: FindingsViewProps)
                       )}
                     </div>
                     <div className="flex items-center gap-1.5 min-w-0" onClick={() => { setSelectedFinding(finding); setDialogOpen(true); }}>
-                      {displayAssignee ? (
-                        <><User className="h-3 w-3 text-muted-foreground shrink-0" /><span className="text-xs truncate">{displayAssignee}</span></>
-                      ) : annotation?.notes && annotation.notes.length > 0 ? (
-                        <><StickyNote className="h-3 w-3 text-blue-500 shrink-0" /><span className="text-xs text-blue-600">{annotation.notes.length} note{annotation.notes.length !== 1 ? "s" : ""}</span></>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
+                      <><User className="h-3 w-3 text-muted-foreground shrink-0" /><span className="text-xs truncate">{displayAssignee}</span></>
                     </div>
                     <span className="text-xs text-muted-foreground" onClick={() => { setSelectedFinding(finding); setDialogOpen(true); }}>
                       {formatDistanceToNow(new Date(finding.created), { addSuffix: true })}

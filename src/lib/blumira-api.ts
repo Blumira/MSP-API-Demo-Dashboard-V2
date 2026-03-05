@@ -50,23 +50,65 @@ export async function getAccessToken(): Promise<string> {
   return data.access_token;
 }
 
-async function apiGet<T = unknown>(
+async function apiRequest<T = unknown>(
   path: string,
-  token: string
+  token: string,
+  init?: RequestInit
 ): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
+      ...(init?.headers || {}),
     },
   });
 
+  const text = await response.text();
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API request failed (${response.status}): ${text}`);
+    throw new Error(
+      `API ${init?.method || "GET"} failed (${response.status}): ${text}`
+    );
   }
 
-  return response.json();
+  if (!text) return {} as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { data: text } as T;
+  }
+}
+
+async function apiGet<T = unknown>(path: string, token: string): Promise<T> {
+  return apiRequest<T>(path, token, { method: "GET" });
+}
+
+async function apiPatch<T = unknown>(
+  path: string,
+  token: string,
+  body: Record<string, unknown>
+): Promise<T> {
+  return apiRequest<T>(path, token, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function apiPost<T = unknown>(
+  path: string,
+  token: string,
+  body: Record<string, unknown>
+): Promise<T> {
+  return apiRequest<T>(path, token, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 export interface MspAccount {
@@ -247,6 +289,19 @@ interface ApiResponse<T> {
   };
 }
 
+export interface FindingUpdate {
+  status?: number;
+  priority?: number;
+  assigned_to?: string | null;
+  resolution?: number;
+  notes?: string;
+}
+
+export interface FindingCommentCreateInput {
+  subject?: string;
+  body: string;
+}
+
 export async function fetchMspAccounts(
   token: string
 ): Promise<MspAccount[]> {
@@ -424,6 +479,54 @@ export async function fetchFindingComments(
   } catch {
     return [];
   }
+}
+
+export async function updateFinding(
+  token: string,
+  accountId: string,
+  findingId: string,
+  updates: FindingUpdate
+): Promise<Finding> {
+  const res = await apiPatch<ApiResponse<Finding> & Finding>(
+    `/msp/accounts/${accountId}/findings/${findingId}`,
+    token,
+    updates as Record<string, unknown>
+  );
+  return res.data || res;
+}
+
+export async function postFindingComment(
+  token: string,
+  accountId: string,
+  findingId: string,
+  input: FindingCommentCreateInput
+): Promise<unknown> {
+  const candidates: Record<string, unknown>[] = [
+    { subject: input.subject || "Dashboard Note", body: input.body },
+    { body: input.body },
+    { comment: input.body },
+    { note: input.body },
+    { notes: input.body },
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const payload of candidates) {
+    try {
+      return await apiPost<unknown>(
+        `/msp/accounts/${accountId}/findings/${findingId}/comments`,
+        token,
+        payload
+      );
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown API error");
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error("Failed to post finding comment: no request attempts succeeded")
+  );
 }
 
 export async function fetchEnrichedAccount(

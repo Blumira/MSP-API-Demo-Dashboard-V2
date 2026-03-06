@@ -8,6 +8,12 @@ import { getRuntimeDemoMode } from "../credentials/route";
 
 export const dynamic = "force-dynamic";
 
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+function isSafeId(value: string) {
+  return SAFE_ID_PATTERN.test(value);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -17,6 +23,13 @@ export async function GET(request: NextRequest) {
     if (!accountId || !findingId) {
       return NextResponse.json(
         { error: "accountId and findingId are required" },
+        { status: 400 }
+      );
+    }
+
+    if (!isSafeId(accountId) || !isSafeId(findingId)) {
+      return NextResponse.json(
+        { error: "Invalid accountId or findingId" },
         { status: 400 }
       );
     }
@@ -33,7 +46,11 @@ export async function GET(request: NextRequest) {
     }
 
     const token = await getAccessToken();
-    const finding = await fetchFindingDetail(token, accountId, findingId);
+    const finding = await fetchFindingDetail(
+      token,
+      encodeURIComponent(accountId),
+      encodeURIComponent(findingId)
+    );
 
     if (!finding) {
       return NextResponse.json(

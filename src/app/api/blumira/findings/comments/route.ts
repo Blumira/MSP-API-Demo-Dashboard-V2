@@ -5,6 +5,12 @@ import { getRuntimeDemoMode } from "../../credentials/route";
 
 export const dynamic = "force-dynamic";
 
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+function isSafeId(value: string) {
+  return SAFE_ID_PATTERN.test(value);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -18,13 +24,24 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if (!isSafeId(accountId) || !isSafeId(findingId)) {
+      return NextResponse.json(
+        { error: "Invalid accountId or findingId" },
+        { status: 400 }
+      );
+    }
+
     if (getRuntimeDemoMode()) {
       const comments = getDemoFindingComments(accountId, findingId);
       return NextResponse.json({ data: comments, demoMode: true });
     }
 
     const token = await getAccessToken();
-    const comments = await fetchFindingComments(token, accountId, findingId);
+    const comments = await fetchFindingComments(
+      token,
+      encodeURIComponent(accountId),
+      encodeURIComponent(findingId)
+    );
 
     return NextResponse.json({ data: comments });
   } catch (error) {

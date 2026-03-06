@@ -193,6 +193,17 @@ function formatPersonName(person: { first_name?: string; last_name?: string; ema
   return full || person.email || null;
 }
 
+function getResponderDisplay(detail: Finding, localAssignee?: string): string {
+  if (localAssignee?.trim()) return localAssignee.trim();
+  if (detail.assigned_to_name?.trim()) return detail.assigned_to_name.trim();
+  if (detail.assigned_to?.trim()) return detail.assigned_to.trim();
+
+  const apiResponder = detail.owners?.responders?.map((p) => formatPersonName(p)).find(Boolean);
+  if (apiResponder) return apiResponder;
+
+  return "Unassigned";
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = (e: React.MouseEvent) => {
@@ -464,6 +475,9 @@ export function FindingDetailDialog({
   const [newNote, setNewNote] = useState("");
   const [assigneeInput, setAssigneeInput] = useState("");
   const [showAssignee, setShowAssignee] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [savingAssignee, setSavingAssignee] = useState(false);
+  const [postingNote, setPostingNote] = useState(false);
 
   const [evidence, setEvidence] = useState<EvidenceResponse | null>(null);
   const [loadingEvidence, setLoadingEvidence] = useState(false);
@@ -500,9 +514,10 @@ export function FindingDetailDialog({
     if (finding && open) {
       const a = getAnnotation(finding.finding_id);
       setAnnotation(a);
-      setAssigneeInput(a?.assignee || "");
+      setAssigneeInput(a?.assignee || finding.assigned_to_name || finding.assigned_to || "");
       setNewNote("");
       setShowAssignee(false);
+      setSyncMessage(null);
       setEvidencePage(1);
       setEvidence(null);
       setComments([]);
@@ -510,7 +525,14 @@ export function FindingDetailDialog({
       setLoadingDetail(true);
       fetch(`/api/blumira/findings?accountId=${finding.org_id}&findingId=${finding.finding_id}`)
         .then((r) => r.json())
-        .then((res) => { if (res.data) setDetailData(res.data); })
+        .then((res) => {
+          if (res.data) {
+            setDetailData(res.data);
+            if (!a?.assignee) {
+              setAssigneeInput(res.data.assigned_to_name || res.data.assigned_to || "");
+            }
+          }
+        })
         .catch(() => {})
         .finally(() => setLoadingDetail(false));
 
@@ -529,25 +551,99 @@ export function FindingDetailDialog({
     fetchEvidence(finding.org_id, finding.finding_id, newPage);
   }, [finding, fetchEvidence]);
 
-  const handleAddNote = useCallback(() => {
+  const handleAddNote = useCallback(async () => {
     if (!finding || !newNote.trim()) return;
-    const updated = addNote(finding.finding_id, newNote.trim(), "You");
-    setAnnotation(updated);
-    setNewNote("");
-    onAnnotationChange?.();
-  }, [finding, newNote, onAnnotationChange]);
+
+    const noteText = newNote.trim();
+    const responderForSync =
+      assigneeInput.trim() ||
+      annotation?.assignee ||
+      detailData?.assigned_to_name ||
+      detailData?.assigned_to ||
+      finding.assigned_to_name ||
+      finding.assigned_to ||
+      "";
+
+    setPostingNote(true);
+    setSyncMessage(null);
+
+    try {
+      const response = await fetch("/api/blumira/findings/comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: finding.org_id,
+          findingId: finding.finding_id,
+          note: noteText,
+          responder: responderForSync,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Failed to post note to finding");
+      }
+
+      fetchComments(finding.org_id, finding.finding_id);
+      setSyncMessage({ type: "success", text: "Note posted to finding." });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to post note to finding";
+      setSyncMessage({ type: "error", text: `Saved locally only: ${message}` });
+    } finally {
+      const updated = addNote(finding.finding_id, noteText, "You");
+      setAnnotation(updated);
+      setNewNote("");
+      setPostingNote(false);
+      onAnnotationChange?.();
+    }
+  }, [finding, newNote, assigneeInput, annotation?.assignee, detailData?.assigned_to_name, detailData?.assigned_to, fetchComments, onAnnotationChange]);
 
   const handleTakeOwnership = useCallback(() => {
     if (!finding) return;
     setShowAssignee(true);
   }, [finding]);
 
-  const handleSaveAssignee = useCallback(() => {
+  const handleSaveAssignee = useCallback(async (nextResponder?: string) => {
     if (!finding) return;
-    const updated = storeAssignee(finding.finding_id, assigneeInput.trim());
-    setAnnotation(updated);
-    setShowAssignee(false);
-    onAnnotationChange?.();
+
+    const responder = (nextResponder ?? assigneeInput).trim();
+    setSavingAssignee(true);
+    setSyncMessage(null);
+
+    try {
+      const response = await fetch("/api/blumira/findings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: finding.org_id,
+          findingId: finding.finding_id,
+          assigned_to: responder || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Failed to update responder on finding");
+      }
+
+      const result = await response.json().catch(() => null);
+      if (result?.data) {
+        setDetailData(result.data as Finding);
+      }
+      setSyncMessage({
+        type: "success",
+        text: responder ? "Responder synced to finding." : "Responder cleared on finding.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to update responder on finding";
+      setSyncMessage({ type: "error", text: `Saved locally only: ${message}` });
+    } finally {
+      const updated = storeAssignee(finding.finding_id, responder);
+      setAnnotation(updated);
+      setShowAssignee(false);
+      setSavingAssignee(false);
+      onAnnotationChange?.();
+    }
   }, [finding, assigneeInput, onAnnotationChange]);
 
   const handleClose = useCallback(() => {
@@ -571,6 +667,7 @@ export function FindingDetailDialog({
     deleteAnnotation(finding.finding_id);
     setAnnotation(null);
     setAssigneeInput("");
+    setSyncMessage(null);
     onAnnotationChange?.();
   }, [finding, onAnnotationChange]);
 
@@ -579,6 +676,8 @@ export function FindingDetailDialog({
   const detail = detailData || finding;
   const blumiraUrl = detail.url || `https://app.blumira.com/${finding.org_id}/reporting/findings/${finding.finding_id}`;
   const isClosed = annotation?.localStatus === "closed";
+  const responderDisplay = getResponderDisplay(detail, annotation?.assignee);
+  const hasResponder = responderDisplay !== "Unassigned";
 
   const noteCount = annotation?.notes?.length || 0;
 
@@ -630,10 +729,10 @@ export function FindingDetailDialog({
                     Closed locally
                   </Badge>
                 )}
-                {annotation?.assignee && (
+                {hasResponder && (
                   <Badge variant="info" className="flex items-center gap-1">
                     <User className="h-3 w-3" />
-                    {annotation.assignee}
+                    {responderDisplay}
                   </Badge>
                 )}
               </div>
@@ -645,7 +744,7 @@ export function FindingDetailDialog({
         <div className="flex gap-2 flex-wrap">
           <Button size="sm" variant="outline" onClick={handleTakeOwnership}>
             <UserCheck className="h-3.5 w-3.5 mr-1.5" />
-            {annotation?.assignee ? "Reassign" : "Take Ownership"}
+            {hasResponder ? "Reassign" : "Take Ownership"}
           </Button>
           {!isClosed ? (
             <Button size="sm" variant="outline" onClick={handleClose}>
@@ -677,12 +776,29 @@ export function FindingDetailDialog({
             <p className="text-xs font-medium">Assign this finding to:</p>
             <UserSelector users={users} value={assigneeInput} onChange={setAssigneeInput} placeholder="Select or type assignee..." />
             <div className="flex gap-2">
-              <Button size="sm" onClick={handleSaveAssignee} disabled={!assigneeInput.trim()}>
+              <Button size="sm" onClick={() => void handleSaveAssignee()} disabled={savingAssignee}>
                 <UserCheck className="h-3.5 w-3.5 mr-1.5" />
-                Assign
+                {savingAssignee ? "Saving..." : "Save Responder"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setAssigneeInput("");
+                  void handleSaveAssignee("");
+                }}
+                disabled={savingAssignee}
+              >
+                Set Unassigned
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setShowAssignee(false)}>Cancel</Button>
             </div>
+          </div>
+        )}
+
+        {syncMessage && (
+          <div className={`rounded-lg border p-3 text-sm ${syncMessage.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+            {syncMessage.text}
           </div>
         )}
 
@@ -704,7 +820,7 @@ export function FindingDetailDialog({
               <DetailRow icon={<Tag className="h-4 w-4" />} label="Category"
                 value={<span>{categoryDisplay}{detail.subcategory && ` / ${detail.subcategory}`}</span>} />
             )}
-            {detail.jurisdiction_name && <DetailRow icon={<Shield className="h-4 w-4" />} label="Jurisdiction" value={detail.jurisdiction_name} />}
+            <DetailRow icon={<UserCheck className="h-4 w-4" />} label="Responder" value={responderDisplay} />
             {detail.source && <DetailRow icon={<Eye className="h-4 w-4" />} label="Source" value={detail.source} />}
             <DetailRow icon={<Clock className="h-4 w-4" />} label="Created"
               value={
@@ -875,15 +991,17 @@ export function FindingDetailDialog({
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
-                    handleAddNote();
+                    void handleAddNote();
                   }
                 }}
               />
-              <Button size="sm" className="self-end" onClick={handleAddNote} disabled={!newNote.trim()}>
+              <Button size="sm" className="self-end" onClick={() => void handleAddNote()} disabled={!newNote.trim() || postingNote}>
                 <Send className="h-3.5 w-3.5" />
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">Press Ctrl+Enter to send. Notes are stored locally in your browser.</p>
+            <p className="text-xs text-muted-foreground">
+              Press Ctrl+Enter to send. Notes are posted to the finding and also retained locally as backup.
+            </p>
           </div>
         </div>
       </DialogContent>
